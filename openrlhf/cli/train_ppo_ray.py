@@ -273,12 +273,12 @@ if __name__ == "__main__":
         default=[0.5, 5.0],
         help="Low and high thresholds for vllm importance sampling truncation",
     )
+    # https://www.emergentmind.com/topics/icepop
     parser.add_argument(
-        "--vllm_is_correction_type",
-        type=str,
-        default="tis",
-        choices=["tis", "icepop", "seq-mask-tis"],
-        help="vLLM IS correction type: tis (token-level clamp), icepop (token-level filter), seq-mask-tis (sequence-level geom mean)",
+        "--use_icepop",
+        action="store_true",
+        default=False,
+        help="Use ICEPOP mode: set vllm_is coefficients outside the threshold interval to 0",
     )
 
     # Async training using ray
