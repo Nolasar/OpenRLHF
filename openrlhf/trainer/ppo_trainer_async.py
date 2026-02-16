@@ -155,7 +155,12 @@ class TrainingActor(BasePPOTrainer):
             # Batch consumed => free one token to allow generator to produce next batch.
             self.rollout_slots.put(None, block=True)
 
+            self.gpu_metrics_tracker.step_start()
             status, global_step = self.train_step(rollout_samples, global_step)
+            self.gpu_metrics_tracker.step_end()
+
+            # Merge GPU utilization metrics into the status dict.
+            status.update(self.gpu_metrics_tracker.get_metrics())
 
             if self.args.dynamic_filtering:
                 status["dynamic_filtering_pass_rate"] = filter_pass_rate
@@ -170,6 +175,7 @@ class TrainingActor(BasePPOTrainer):
             self.wandb_logger.close()
         if self.tensorboard_logger:
             self.tensorboard_logger.close()
+        self.gpu_metrics_tracker.shutdown()
 
     def broadcast_to_vllm(self):
         # vLLM critical section: must not overlap with generation.

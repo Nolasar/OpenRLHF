@@ -16,6 +16,7 @@ from openrlhf.trainer.ppo_utils.replay_buffer import balance_experiences
 from openrlhf.trainer.ray.launcher import RayActorGroup
 from openrlhf.trainer.ray.vllm_engine import batch_vllm_engine_call
 from openrlhf.utils.deepspeed import DeepspeedStrategy
+from openrlhf.utils.gpu_metrics import GpuMetricsTracker
 from openrlhf.utils.logging_utils import TensorboardLogger, WandbLogger, MLflowLogger, init_logger
 from openrlhf.utils.utils import get_tokenizer
 
@@ -102,6 +103,13 @@ class BasePPOTrainer(ABC):
         self.wandb_logger = WandbLogger(self.args) if self.args.use_wandb else None
         self.tensorboard_logger = TensorboardLogger(self.args) if self.args.use_tensorboard else None
         self.mlflow_logger = MLflowLogger(self.args) if self.args.use_mlflow else None
+
+        # GPU utilization tracker
+        idle_rate_thresholds = getattr(self.args, "idle_rate_thresholds", [90])
+        self.gpu_metrics_tracker = GpuMetricsTracker(
+            gpu_index=0,
+            idle_rate_thresholds=idle_rate_thresholds,
+        )
 
     def fit(self):
         raise NotImplementedError("fit method is not implemented")
@@ -316,7 +324,12 @@ class PPOTrainer(BasePPOTrainer):
                     break
 
                 # Run PPO update on this batch and bump the global step counter.
+                self.gpu_metrics_tracker.step_start()
                 status, global_step = self.train_step(rollout_samples, global_step)
+                self.gpu_metrics_tracker.step_end()
+
+                # Merge GPU utilization metrics into the status dict.
+                status.update(self.gpu_metrics_tracker.get_metrics())
 
                 # Add generated samples to status dictionary
                 if self.args.dynamic_filtering:
@@ -349,6 +362,7 @@ class PPOTrainer(BasePPOTrainer):
             self.tensorboard_logger.close()
         if self.mlflow_logger:
             self.mlflow_logger.close()
+        self.gpu_metrics_tracker.shutdown()
             
     @torch.no_grad()
     def evaluate(self, global_step, **generate_kwargs):
