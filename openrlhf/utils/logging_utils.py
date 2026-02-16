@@ -80,7 +80,7 @@ class WandbLogger:
         wandb.define_metric("eval/epoch")
         wandb.define_metric("eval/*", step_metric="eval/epoch", step_sync=True)
         self.handle = wandb
-        self.samples_table = wandb.Table(columns=["global_step", "text", "reward"])
+        self.samples_table = wandb.Table(columns=["global_step", "text", "reward", "gts"])
 
     def log_train(self, global_step: int, logs_dict: Dict[str, Any]) -> None:
         logs_dict = dict(logs_dict)
@@ -122,7 +122,13 @@ class TensorboardLogger:
         generated_samples = logs_dict.get("generated_samples")
         for k, v in logs_dict.items():
             if k == "generated_samples" and v is not None:
-                text, reward = generated_samples
+                if len(generated_samples) == 2:
+                    text, reward = generated_samples
+                    formatted_text = f"Sample:\\n{text}\\n\\nReward: {reward:.4f}"
+                else:
+                    text, reward, label = generated_samples
+                    formatted_text = f"Sample:\\n{text}\\n\\nReward: {reward:.4f}\\n\\nGround truth: {label}"
+                    
                 formatted_text = f"Sample:\\n{text}\\n\\nReward: {reward:.4f}"
                 self.writer.add_text("train/generated_samples", formatted_text, global_step)
             elif v is not None:
@@ -134,3 +140,96 @@ class TensorboardLogger:
 
     def close(self) -> None:
         self.writer.close()
+
+class MLflowLogger:
+    """Handle MLflow setup and training-time logging."""
+
+    def __init__(self, args) -> None:
+        import mlflow
+        import transformers
+        self.mlflow = mlflow
+
+        if hasattr(args, "mlflow_tracking_uri") and args.mlflow_tracking_uri:
+            self.mlflow.set_tracking_uri(args.mlflow_tracking_uri)
+
+        if hasattr(args, "mlflow_experiment_name") and args.mlflow_experiment_name:
+            exp_name = args.mlflow_experiment_name
+        
+            s3_root = os.environ.get('S3_ARTIFACT_ROOT')
+            if not s3_root:
+                raise ValueError("[MLflowLogger] S3_ARTIFACT_ROOT is not set in environment!")
+            
+            # Формируем путь: s3://mlflow/бакет/имя-эксперимента
+            artifact_location = f"{s3_root}/{exp_name}"
+            
+            client = self.mlflow.tracking.MlflowClient()
+            experiment = client.get_experiment_by_name(exp_name)
+            
+            if experiment is None:
+                print(f"[MLflowLogger] Creating new experiment: {exp_name} at {artifact_location}")
+                self.mlflow.create_experiment(name=exp_name, artifact_location=artifact_location)
+            else:
+                print(f"[MLflowLogger] Using existing experiment: {exp_name}")
+    
+        self.mlflow.set_experiment(exp_name)
+        
+        # Determine run name (prioritize mlflow_run_name, fallback to wandb_run_name)
+        run_name = getattr(args, "mlflow_run_name", None)
+        if not run_name:
+            run_name = getattr(args, "wandb_run_name", "openrlhf_run")
+        
+        self.mlflow.enable_system_metrics_logging()  
+        self.mlflow.set_system_metrics_sampling_interval(1)
+        self.mlflow.start_run(run_name=run_name)
+        
+        # Log model and dataset as tags so they appear in Details section
+        if hasattr(args, "pretrain") and args.pretrain:
+            self.mlflow.set_tag("model", args.pretrain)
+            # self.mlflow.transformers.log_model(args.pretrain, "model")
+        if hasattr(args, "prompt_data") and args.prompt_data:
+            self.mlflow.set_tag("dataset", args.prompt_data)
+
+        if hasattr(args, "__dict__"):
+            params = {k: v for k, v in args.__dict__.items() if isinstance(v, (int, float, str, bool))}
+            self.mlflow.log_params(params)
+
+        # Log Hyperparameters (filter for serializable types)
+        if hasattr(args, "__dict__"):
+            params = {k: v for k, v in args.__dict__.items() if isinstance(v, (int, float, str, bool))}
+            self.mlflow.log_params(params)
+
+    def log_train(self, global_step: int, logs_dict: Dict[str, Any]) -> None:
+        logs_dict = dict(logs_dict)
+        
+        # Handle generated samples: Log as text artifact + metric for reward
+        generated_samples = logs_dict.pop("generated_samples", None)
+        if generated_samples:
+            if len(generated_samples) > 2:
+                text, reward, label = generated_samples
+                # Log the sample text to a file in artifacts
+                self.mlflow.log_text(text+f"\nground_truth: {label}\n", f"generated_samples/step_{global_step}.txt")
+            else:
+                text, reward = generated_samples
+                # Log the sample text to a file in artifacts
+                self.mlflow.log_text(text, f"generated_samples/step_{global_step}.txt")
+            # Log the reward of this sample
+            self.mlflow.log_metric("train/sample_reward", reward, step=global_step)
+
+        # Log standard metrics
+        metrics = {}
+        for k, v in logs_dict.items():
+            if v is not None and isinstance(v, (int, float)):
+                metrics[f"train/{k}"] = v
+        
+        self.mlflow.log_metrics(metrics, step=global_step)
+
+    def log_eval(self, global_step: int, logs_dict: Dict[str, Any]) -> None:
+        metrics = {}
+        for k, v in logs_dict.items():
+            if v is not None and isinstance(v, (int, float)):
+                metrics[f"eval/{k}"] = v
+        
+        self.mlflow.log_metrics(metrics, step=global_step)
+
+    def close(self) -> None:
+        self.mlflow.end_run()

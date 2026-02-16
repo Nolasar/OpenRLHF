@@ -1,6 +1,6 @@
 import argparse
 from datetime import datetime
-
+import os
 import ray
 from ray.util.placement_group import placement_group
 
@@ -18,8 +18,32 @@ from openrlhf.utils import get_strategy
 def train(args):
     # initialize ray if not initialized
     if not ray.is_initialized():
-        ray.init(runtime_env={"env_vars": {"TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN"}})
-
+        env_vars = {"TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN"}
+        mlflow_vars = [
+            "MLFLOW_TRACKING_URI",
+            "MLFLOW_TRACKING_USERNAME",
+            "MLFLOW_TRACKING_PASSWORD",
+            "MLFLOW_TRACKING_TOKEN",
+            "MLFLOW_S3_ENDPOINT_URL",
+            "S3_ARTIFACT_ROOT",
+            "MLFLOW_S3_IGNORE_TLS=",
+            "S3_DATA_STORAGE_PORT",
+            "S3_DATA_STORAGE_CONTAINER",
+            "S3_DATA_STORAGE_ACCESS_KEY",
+            "S3_DATA_STORAGE_SECRET_KEY",
+            "S3_RESULTS_STORAGE_CONTAINER"
+            "S3_RESULTS_STORAGE_PORT",
+            "S3_RESULTS_STORAGE_ACCESS_KEY",
+            "S3_USERNAME",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_ACCESS_KEY_ID",
+        ]
+        for v in mlflow_vars:
+            if v in os.environ:
+                env_vars[v] = os.environ[v]
+                
+        ray.init(runtime_env={"env_vars": env_vars})
+    
     # configure strategy
     strategy = get_strategy(args)
     strategy.print(args)
@@ -482,7 +506,13 @@ if __name__ == "__main__":
 
     # TensorBoard parameters
     parser.add_argument("--use_tensorboard", type=str, default=None, help="TensorBoard logging path")
-
+    
+    # MLFlow
+    parser.add_argument("--mlflow_experiment_name", type=str, default=None, help="Name of the MLflow experiment")
+    parser.add_argument("--use_mlflow", action="store_true", default=False, help="Enable MLflow logging")
+    parser.add_argument("--mlflow_run_name", type=str, default=None, help="Name of the MLflow run")
+    parser.add_argument("--mlflow_tracking_uri", type=str, default=None, help="MLflow tracking URI")
+    
     # performance tuning
     parser.add_argument("--perf", action="store_true", default=False)
 

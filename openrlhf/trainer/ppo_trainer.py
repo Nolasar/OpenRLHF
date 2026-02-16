@@ -16,7 +16,7 @@ from openrlhf.trainer.ppo_utils.replay_buffer import balance_experiences
 from openrlhf.trainer.ray.launcher import RayActorGroup
 from openrlhf.trainer.ray.vllm_engine import batch_vllm_engine_call
 from openrlhf.utils.deepspeed import DeepspeedStrategy
-from openrlhf.utils.logging_utils import TensorboardLogger, WandbLogger, init_logger
+from openrlhf.utils.logging_utils import TensorboardLogger, WandbLogger, MLflowLogger, init_logger
 from openrlhf.utils.utils import get_tokenizer
 
 logger = init_logger(__name__)
@@ -101,6 +101,7 @@ class BasePPOTrainer(ABC):
         # Tracking backends
         self.wandb_logger = WandbLogger(self.args) if self.args.use_wandb else None
         self.tensorboard_logger = TensorboardLogger(self.args) if self.args.use_tensorboard else None
+        self.mlflow_logger = MLflowLogger(self.args) if self.args.use_mlflow else None
 
     def fit(self):
         raise NotImplementedError("fit method is not implemented")
@@ -112,7 +113,7 @@ class BasePPOTrainer(ABC):
         # Peek at the first decoded sample for quick sanity check.
         sample0 = [
             self.tokenizer.batch_decode(experiences[0].sequences[0].unsqueeze(0), skip_special_tokens=True)[0],
-            experiences[0].info["reward"][0].item(),
+            experiences[0].info["reward"][0].item(), experiences[0].labels[0]
         ]
         print(sample0)
 
@@ -203,7 +204,8 @@ class BasePPOTrainer(ABC):
                 self.wandb_logger.log_train(global_step, logs_dict)
             if self.tensorboard_logger:
                 self.tensorboard_logger.log_train(global_step, logs_dict)
-
+            if self.mlflow_logger:
+                self.mlflow_logger.log_train(global_step, logs_dict)
         # save ckpt
         # TODO: save best model on dev, use loss/perplexity/others on whole dev dataset as metric
         client_states = client_states or {}
@@ -345,7 +347,9 @@ class PPOTrainer(BasePPOTrainer):
             self.wandb_logger.close()
         if self.tensorboard_logger:
             self.tensorboard_logger.close()
-
+        if self.mlflow_logger:
+            self.mlflow_logger.close()
+            
     @torch.no_grad()
     def evaluate(self, global_step, **generate_kwargs):
         """Evaluate model performance on eval dataset."""
@@ -408,7 +412,9 @@ class PPOTrainer(BasePPOTrainer):
             self.wandb_logger.log_eval(global_step, logs)
         if self.tensorboard_logger:
             self.tensorboard_logger.log_eval(global_step, logs)
-
+        if self.mlflow_logger:
+            self.mlflow_logger.log_eval(global_step, logs)
+            
         end_time = time.time()
         duration = end_time - start_time
         time_str = str(timedelta(seconds=duration)).split(".")[0]
