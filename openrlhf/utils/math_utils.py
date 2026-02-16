@@ -183,8 +183,7 @@ def _str_is_int(value: str) -> bool:
 
 def _str_to_int(value: str) -> int:
     value = value.replace(",", "")
-    value = float(value)
-    return int(value)
+    return int(float(value))
 
 
 def _inject_implicit_mixed_number(step: str) -> str:
@@ -254,7 +253,8 @@ TUPLE_CHARS = "()[]"
 
 
 def should_allow_eval(expr: str) -> bool:
-    if count_unknown_letters_in_expr(expr) > 2:
+    expr_clean = expr.replace("sqrt", "").replace("frac", "")
+    if len({x for x in expr_clean if x.isalpha()}) > 2:
         return False
     for bad_string in BAD_SUBSTRINGS:
         if bad_string in expr:
@@ -265,25 +265,17 @@ def should_allow_eval(expr: str) -> bool:
     return True
 
 
-def count_unknown_letters_in_expr(expr: str) -> int:
-    expr = expr.replace("sqrt", "")
-    expr = expr.replace("frac", "")
-    letters_in_expr = {x for x in expr if x.isalpha()}
-    return len(letters_in_expr)
-
-
 def are_equal_under_sympy(ground_truth_normalized: str, given_normalized: str) -> bool:
-    are_equal = False
     try:
         expr = f"({ground_truth_normalized})-({given_normalized})"
         if should_allow_eval(expr):
             sympy_diff = _sympy_parse(expr)
             simplified = sympy.simplify(sympy_diff)
             if simplified == 0:
-                are_equal = True
+                return True
     except Exception:
         pass
-    return are_equal
+    return False
 
 
 def split_tuple(expr: str) -> list[str]:
@@ -296,10 +288,8 @@ def split_tuple(expr: str) -> list[str]:
         and expr[-1] in TUPLE_CHARS
         and all([ch not in expr[1:-1] for ch in TUPLE_CHARS])
     ):
-        elems = [elem.strip() for elem in expr[1:-1].split(",")]
-    else:
-        elems = [expr]
-    return elems
+        return [elem.strip() for elem in expr[1:-1].split(",")]
+    return [expr]
 
 
 def last_boxed_only_string(string: str) -> str | None:
@@ -338,8 +328,7 @@ def remove_boxed(value: str) -> str | None:
 def extract_boxed_answer(solution: str) -> str | None:
     """Extract the answer from inside a LaTeX \\boxed{} command."""
     solution = last_boxed_only_string(solution)
-    solution = remove_boxed(solution) if solution is not None else None
-    return solution
+    return remove_boxed(solution) if solution is not None else None
 
 
 def grade_answer_sympy(given_answer: str, ground_truth: str) -> bool:
@@ -356,27 +345,22 @@ def grade_answer_sympy(given_answer: str, ground_truth: str) -> bool:
     if len(ground_truth_elems) > 1 and (
         ground_truth_normalized[0] != given_normalized[0] or ground_truth_normalized[-1] != given_normalized[-1]
     ):
-        is_correct = False
+        return False
     if len(ground_truth_elems) != len(given_elems):
-        is_correct = False
-    else:
-        is_correct = False
-        for gt_elem, given_elem in zip(ground_truth_elems, given_elems, strict=False):
-            if _is_frac(gt_elem) and _is_frac(given_elem):
-                is_correct = gt_elem == given_elem
-            elif _str_is_int(gt_elem) != _str_is_int(given_elem):
-                is_correct = False
-            else:
-                is_correct = are_equal_under_sympy(gt_elem, given_elem)
-            if not is_correct:
-                break
-    return is_correct
+        return False
+    for gt_elem, given_elem in zip(ground_truth_elems, given_elems):
+        if _is_frac(gt_elem) and _is_frac(given_elem):
+            if gt_elem != given_elem:
+                return False
+        elif _str_is_int(gt_elem) != _str_is_int(given_elem):
+            return False
+        elif not are_equal_under_sympy(gt_elem, given_elem):
+            return False
+    return True
 
 
 def grade_answer_mathd(given_answer: str, ground_truth: str) -> bool:
-    ground_truth_normalized_mathd = mathd_normalize_answer(ground_truth)
-    given_answer_normalized_mathd = mathd_normalize_answer(given_answer)
-    return ground_truth_normalized_mathd == given_answer_normalized_mathd
+    return mathd_normalize_answer(ground_truth) == mathd_normalize_answer(given_answer)
 
 
 def grade_answer(given_answer: str, ground_truth: str) -> bool:
