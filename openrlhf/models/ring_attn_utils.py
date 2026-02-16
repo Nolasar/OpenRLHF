@@ -18,7 +18,6 @@ def unpad_input(hidden_states, attention_mask):
     cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
     output = hidden_states.flatten(0, 1)[indices]
     
-    # Пятое значение - заглушка, так как вызывающий код распаковывает 5 переменных
     return output, indices, cu_seqlens, max_seqlen_in_batch, None 
 
 def rearrange(x, *args, **kwargs):
@@ -29,10 +28,6 @@ def rearrange(x, *args, **kwargs):
         raise ImportError("Please install einops: pip install einops")
 
 def all_gather(tensor, group=None):
-    """
-    Простая реализация all_gather на torch.distributed.
-    Используется только если включен ring attention (чего у нас нет).
-    """
     if group is None:
         return tensor
     
