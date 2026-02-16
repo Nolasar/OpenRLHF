@@ -70,7 +70,10 @@ def blending_datasets(
             namespace, dataset = dataset.split("/")
             data = MsDataset.load(dataset, namespace=namespace)
         else:
-            data = load_dataset(dataset, data_dir=data_dir)
+            if dataset == "openai/gsm8k":
+                data = load_dataset(dataset, "main", data_dir=data_dir)
+            else:
+                data = load_dataset(dataset, data_dir=data_dir)
             strategy.print(f"loaded {dataset} from files")
 
         # Select dataset
