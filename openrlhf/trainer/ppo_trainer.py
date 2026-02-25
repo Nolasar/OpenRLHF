@@ -107,7 +107,6 @@ class BasePPOTrainer(ABC):
         # GPU utilization tracker
         idle_rate_thresholds = getattr(self.args, "idle_rate_thresholds", [90])
         self.gpu_metrics_tracker = GpuMetricsTracker(
-            gpu_index=0,
             idle_rate_thresholds=idle_rate_thresholds,
         )
 

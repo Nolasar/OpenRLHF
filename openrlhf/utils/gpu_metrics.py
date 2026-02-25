@@ -2,8 +2,10 @@
 
 Tracks compute time, idle time, idle ratio, and threshold-based idle rate
 by sampling GPU utilization in a background thread via pynvml.
+Automatically detects GPUs from CUDA_VISIBLE_DEVICES and supports multi-GPU tracking.
 """
 
+import os
 import threading
 import time
 from typing import Dict, List, Optional
@@ -20,12 +22,34 @@ except ImportError:
     _PYNVML_AVAILABLE = False
 
 
+def _get_gpu_indices() -> List[int]:
+    """Parse CUDA_VISIBLE_DEVICES into a list of physical GPU indices.
+
+    Returns:
+        List of GPU indices to monitor.  Falls back to ``[0]`` when the
+        environment variable is unset or empty.
+    """
+    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if not cuda_visible.strip():
+        return [0]
+    try:
+        return [int(idx.strip()) for idx in cuda_visible.split(",") if idx.strip()]
+    except ValueError:
+        logger.warning(
+            f"GpuMetricsTracker: failed to parse CUDA_VISIBLE_DEVICES='{cuda_visible}'; falling back to GPU 0"
+        )
+        return [0]
+
+
 class GpuMetricsTracker:
     """Tracks GPU compute/idle timing and utilization-based idle rates.
 
+    Automatically detects GPUs from ``CUDA_VISIBLE_DEVICES`` and monitors
+    all of them.  Reports both per-GPU and averaged utilization metrics.
+
     Usage::
 
-        tracker = GpuMetricsTracker(gpu_index=0, idle_rate_thresholds=[90])
+        tracker = GpuMetricsTracker(idle_rate_thresholds=[90])
 
         # -- training loop --
         tracker.step_start()
@@ -33,15 +57,17 @@ class GpuMetricsTracker:
         tracker.step_end()
 
         metrics = tracker.get_metrics()
+        # With CUDA_VISIBLE_DEVICES=0,1 and threshold 90:
         # metrics == {
         #     "gpu/compute_time": 12.3,
         #     "gpu/idle_time": 1.5,
         #     "gpu/idle_ratio": 0.108,
-        #     "gpu/ir_90": 0.25,   # 25 % of samples had util < 90 %
+        #     "gpu/ir_90": 0.25,       # averaged across GPUs
+        #     "gpu_0/ir_90": 0.20,     # per-GPU
+        #     "gpu_1/ir_90": 0.30,     # per-GPU
         # }
 
     Args:
-        gpu_index: CUDA device ordinal to monitor (default 0).
         idle_rate_thresholds: List of utilization thresholds for ``ir_T`` metrics.
             Each value *T* produces a metric ``gpu/ir_{T}`` equal to the
             fraction of utilization samples below *T* %.
@@ -50,25 +76,28 @@ class GpuMetricsTracker:
 
     def __init__(
         self,
-        gpu_index: int = 0,
         idle_rate_thresholds: Optional[List[int]] = None,
         poll_interval_s: float = 0.1,
     ):
-        self.gpu_index = gpu_index
         self.idle_rate_thresholds = idle_rate_thresholds or [90]
         self.poll_interval_s = poll_interval_s
 
-        self._handle = None
+        self._gpu_indices: List[int] = []
+        self._handles: Dict[int, object] = {}
         self._nvml_initialized = False
+
         if _PYNVML_AVAILABLE:
             try:
                 pynvml.nvmlInit()
-                self._handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
+                self._gpu_indices = _get_gpu_indices()
+                for idx in self._gpu_indices:
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
+                    self._handles[idx] = handle
+                    name = pynvml.nvmlDeviceGetName(handle)
+                    if isinstance(name, bytes):
+                        name = name.decode("utf-8")
+                    logger.info(f"GpuMetricsTracker: monitoring GPU {idx} ({name})")
                 self._nvml_initialized = True
-                name = pynvml.nvmlDeviceGetName(self._handle)
-                if isinstance(name, bytes):
-                    name = name.decode("utf-8")
-                logger.info(f"GpuMetricsTracker: monitoring GPU {gpu_index} ({name})")
             except pynvml.NVMLError as e:
                 logger.warning(f"GpuMetricsTracker: pynvml init failed ({e}); GPU metrics disabled")
         else:
@@ -79,7 +108,8 @@ class GpuMetricsTracker:
         self._compute_time: float = 0.0
         self._idle_time: float = 0.0
 
-        self._util_samples: List[int] = []
+        # Per-GPU utilization samples: {gpu_index: [util_pct, ...]}
+        self._util_samples: Dict[int, List[int]] = {idx: [] for idx in self._gpu_indices}
 
         self._sampling = False
         self._sampler_thread: Optional[threading.Thread] = None
@@ -95,7 +125,7 @@ class GpuMetricsTracker:
         else:
             self._idle_time = 0.0
 
-        self._util_samples = []
+        self._util_samples = {idx: [] for idx in self._gpu_indices}
         self._start_sampling()
 
     def step_end(self) -> None:
@@ -117,7 +147,8 @@ class GpuMetricsTracker:
         - ``gpu/compute_time`` — seconds of active compute
         - ``gpu/idle_time`` — seconds of idle before this step
         - ``gpu/idle_ratio`` — idle / (idle + compute)
-        - ``gpu/ir_{T}`` — fraction of utilization samples < T %
+        - ``gpu/ir_{T}`` — fraction of utilization samples < T %, averaged across GPUs
+        - ``gpu_{i}/ir_{T}`` — per-GPU fraction of utilization samples < T %
         """
         total = self._idle_time + self._compute_time
         idle_ratio = self._idle_time / total if total > 0 else 0.0
@@ -128,14 +159,24 @@ class GpuMetricsTracker:
             "gpu/idle_ratio": round(idle_ratio, 4),
         }
 
-        n_samples = len(self._util_samples)
         for t in self.idle_rate_thresholds:
-            if n_samples > 0:
-                count_below = sum(1 for u in self._util_samples if u < t)
-                ir_value = count_below / n_samples
+            per_gpu_ir: List[float] = []
+            for idx in self._gpu_indices:
+                samples = self._util_samples.get(idx, [])
+                n_samples = len(samples)
+                if n_samples > 0:
+                    count_below = sum(1 for u in samples if u < t)
+                    ir_value = count_below / n_samples
+                else:
+                    ir_value = 0.0
+                metrics[f"gpu_{idx}/ir_{t}"] = round(ir_value, 4)
+                per_gpu_ir.append(ir_value)
+
+            # Averaged ir across all GPUs
+            if per_gpu_ir:
+                metrics[f"gpu/ir_{t}"] = round(sum(per_gpu_ir) / len(per_gpu_ir), 4)
             else:
-                ir_value = 0.0
-            metrics[f"gpu/ir_{t}"] = round(ir_value, 4)
+                metrics[f"gpu/ir_{t}"] = 0.0
 
         return metrics
 
@@ -155,13 +196,14 @@ class GpuMetricsTracker:
             self._sampler_thread = None
 
     def _sample_loop(self) -> None:
-        """Periodically sample GPU utilization until stopped."""
+        """Periodically sample GPU utilization for all monitored GPUs."""
         while not self._stop_event.is_set():
-            try:
-                util = pynvml.nvmlDeviceGetUtilizationRates(self._handle)
-                self._util_samples.append(util.gpu)
-            except pynvml.NVMLError:
-                pass
+            for idx, handle in self._handles.items():
+                try:
+                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    self._util_samples[idx].append(util.gpu)
+                except pynvml.NVMLError:
+                    pass
             self._stop_event.wait(self.poll_interval_s)
 
     def shutdown(self) -> None:

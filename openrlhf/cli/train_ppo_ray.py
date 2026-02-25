@@ -513,6 +513,15 @@ if __name__ == "__main__":
     parser.add_argument("--mlflow_run_name", type=str, default=None, help="Name of the MLflow run")
     parser.add_argument("--mlflow_tracking_uri", type=str, default=None, help="MLflow tracking URI")
     
+    # GPU metrics
+    parser.add_argument(
+        "--idle_rate_thresholds",
+        type=int,
+        nargs="+",
+        default=[90],
+        help="GPU utilization thresholds for ir_T metrics (e.g. --idle_rate_thresholds 50 90)",
+    )
+
     # performance tuning
     parser.add_argument("--perf", action="store_true", default=False)
 
