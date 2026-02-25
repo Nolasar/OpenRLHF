@@ -38,7 +38,7 @@ class Actor(nn.Module):
     def __init__(
         self,
         pretrain_or_model,
-        attn_implementation="flash_attention_2",
+        attn_implementation="eager",
         param_dtype="bf16",
         load_in_4bit=False,
         lora_rank=0,

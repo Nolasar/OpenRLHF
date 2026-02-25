@@ -18,7 +18,7 @@ from openrlhf.utils import get_strategy
 def train(args):
     # initialize ray if not initialized
     if not ray.is_initialized():
-        env_vars = {"TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "WARN"}
+        env_vars = {"TOKENIZERS_PARALLELISM": "true", "NCCL_DEBUG": "INFO"}
         mlflow_vars = [
             "MLFLOW_TRACKING_URI",
             "MLFLOW_TRACKING_USERNAME",
@@ -566,11 +566,11 @@ if __name__ == "__main__":
             args.rollout_max_tokens_per_gpu = args.train_max_tokens_per_gpu
 
     if args.packing_samples:
-        if "flash_attention" not in args.attn_implementation:
-            print(
-                "[Warning] Please use --attn_implementation with flash_attention to accelerate when --packing_samples is enabled."
-            )
-            args.attn_implementation = "flash_attention_2"
+        # if "flash_attention" not in args.attn_implementation:
+        #     print(
+        #         "[Warning] Please use --attn_implementation with flash_attention to accelerate when --packing_samples is enabled."
+        #     )
+        #     args.attn_implementation = "flash_attention_2"
         assert args.vllm_num_engines > 0, "Only support `--packing_samples` with vLLM."
 
     if args.vllm_enable_sleep and not args.colocate_all_models:
